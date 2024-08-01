@@ -1,2 +1,2 @@
 # Scripts
-Batch, Powershell, VSB
+Repository of Scripts Made by 1UPTEKBEN using Batch, Powershell & VBS
