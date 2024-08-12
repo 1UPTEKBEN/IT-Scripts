@@ -1,0 +1,1941 @@
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<title>System Information v2.0c 2018-08-23</title>
+<SCRIPT LANGUAGE="VBScript">
+<!--
+' ------------------------
+'System Info Script By Ben
+' ------------------------
+
+'constants
+Const wbemFlagReturnImmediately = &h10
+Const wbemFlagForwardOnly       = &h20
+Const HKEY_LOCAL_MACHINE        = &H80000002
+Const HKLM=&H80000002 'HKEY_LOCAL_MACHINE
+Const HKCU=&H80000001 'HKEY_CURRENT_USER
+Const REG_SZ=1
+Const REG_EXPAND_SZ=2
+Const REG_BINARY=3
+Const REG_DWORD=4
+Const REG_MULTI_SZ=7
+Const HKCU_IE_PROXY = "Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+' Global variables
+Dim EmailDest
+Dim SenderAccount
+Dim password 
+Dim objWMIService
+Dim SearchString, MyWO, YourSN, MySN, MyGetInfo , YourGetInfo, strComputer
+Dim strDomain, strUser, strPassword, OSNum, OSName
+Dim ExtraList
+Dim arrMonitorInfo()
+Dim objSWbemLocator, objSWbemServices
+Dim YourComputerName,MyComputerName
+Dim CallID, LastSend, CurrentUser
+Dim http
+
+ExtraList = False 'don't list s/w etc by default
+Set oReg=GetObject("winmgmts:!root/default:StdRegProv") 'local registry
+Set  http = CreateObject( "MSXML2.XMLHTTP") 'http for sending email data
+
+Function GetUserInput()
+GetUserInput = ""
+b = 1
+While b < 99 'loop until we set b to 99 i = 1
+Line = 1
+Str = ""
+htmlstr = "<br><br><b>Comments: </b><br>"
+While Line < 99 'loop until we set Line to 99
+ prmpt = "Add your name and comments - Line " & Line
+ x = inputbox("Enter next line" & vbcrlf & "or click cancel to insert a blank line or if finished." & vbcrlf & vbcrlf & str,prmpt)
+ if x = "" then
+ ans = msgbox("Enter a blank line here (No=Finished)?",vbQuestion + vbYesNo,"Blank line here or Finished?")
+ if ans = vbNo then Line=99
+ str = str & vbCrLf
+ htmlstr = htmlstr & "<br>"
+ Else
+ str = str & x & vbCrLf
+ htmlstr = htmlstr & x & "<br>"
+ i = i + 1
+ End If
+Wend
+
+GetUserInput = htmlstr
+butprmpt = "  Yes=OK to Send    No=Start Again        Cancel=Abort"
+x = Msgbox("Comment correct?" & vbcrlf & vbcrlf & str & vbCrLf & vbCrLf & butprmpt,vbQuestion + vbYesNoCancel,"Check your comment is OK") 
+If x = vbYes then Exit Function 'vbYes ?
+If x = vbCancel then
+ GetUserInput = "999XXX"
+ Exit Function
+End If
+
+Wend
+
+
+End Function
+
+'*******
+
+Public Function httpPOST(url, t, f, s, b)
+on Error Resume Next
+ http.Open "POST", url, False 
+ http.setRequestHeader  "Content-Type",  "application/x-www-form-urlencoded"
+ this = "to=" & escape(t) & "&from=" & escape(f) & "&subject=" & escape(s) & "&body=" & escape(b)
+ http.send this
+ httpPOST = http.responseText
+End Function
+
+'*****
+
+Function GetHeader(url)
+on Error Resume Next
+ http.open "GET",url,false
+ http.send
+ GetHeader=http.getAllResponseHeaders
+End Function
+
+'***
+Function GetPage(url)
+on Error Resume Next
+ http.open "GET",url,false
+ http.send
+ GetPage = http.responseText
+End Function
+'***
+Public Function httpGET(url ) 
+on Error Resume Next
+ http.Open "GET", url, False
+ http.send
+ httpGET = http.responseText
+End Function
+
+'****
+Function GetValue(Key, SubKey, ValueName, KeyType)
+Dim Ret
+On Error Resume Next
+
+Select Case KeyType
+ Case REG_SZ
+ oReg.GetStringValue Key, SubKey, ValueName, Value
+ Ret = Value
+ Case REG_EXPAND_SZ
+ oReg.GetExpandedStringValue Key, SubKey, ValueName, Value
+ Ret = Value
+ Case REG_BINARY
+ oReg.GetBinaryValue Key, SubKey, ValueName, Value
+ Ret = Value
+ Case REG_DWORD
+ oReg.GetDWORDValue Key, SubKey, ValueName, Value
+ Ret = Value
+ Case REG_MULTI_SZ
+ oReg.GetMultiStringValue Key, SubKey, ValueName, Value
+ Ret = Value
+End Select
+GetValue = Ret
+End Function
+
+  
+ ' _____________________________ ***** End Email code *******
+
+
+
+
+
+Function GetStartup(strComputer)
+'List programs that run at Startup on a computer
+x=""
+Set colStartupCommands = objSWbemServices.ExecQuery ("SELECT * FROM Win32_StartupCommand")
+For Each objStartupCommand in colStartupCommands
+Name = trim(objStartupCommand.Name)
+if Name <> "" and ucase(Name) <> "DESKTOP" then
+ x=x &  "<br><b>" & objStartupCommand.Name & "</b> "
+ x=x &  objStartupCommand.Command
+ x=x &  "<br>..........From Location: " & objStartupCommand.Location
+ 'x=x &  " Description: " & objStartupCommand.Description
+ 'x=x &  " SettingID: " & objStartupCommand.SettingID
+ 'x=x &  " User: " & objStartupCommand.User
+End If
+Next
+GetStartup="<br><b>Startup Programs</b>" & x & "<br>"
+End Function
+
+'-----------
+
+Function GetPrinters(strComputer)
+On Error Resume Next
+'List user printers
+Set colInstalledPrinters =  objSWbemServices.ExecQuery ("Select * from Win32_Printer" )
+For Each objPrinter in colInstalledPrinters
+'get default printer separately into y so can list it first
+ if objPrinter.Default=True then y =  "<br>" & objPrinter.Name &  " <b> (DEFAULT PRINTER)</b>"  else   x = x &  "<br>" & objPrinter.Name 
+Next
+y = y & x
+if ltrim(trim(y)) = "" then y = "<br>No printer drivers installed"
+GetPrinters = "<br><b>Printer Drivers</b>" & y & "<br>"
+
+End Function
+
+' ------------
+Function EventErrors(strComputer)
+Const CONVERT_TO_LOCAL_TIME = True
+'List a weeks worth of Event errors
+On Error Resume Next
+Set dtmConvertedDate = CreateObject("WbemScripting.SWbemDateTime")
+Set dtmStartDate = CreateObject("WbemScripting.SWbemDateTime")
+Set dtmEndDate = CreateObject("WbemScripting.SWbemDateTime")
+DateToCheck = CDate(Now)
+dtmStartDate.SetVarDate DateToCheck -7, CONVERT_TO_LOCAL_TIME
+dtmEndDate.SetVarDate DateToCheck, CONVERT_TO_LOCAL_TIME
+Set colEvents = objSWbemServices.ExecQuery ("Select * from Win32_NTLogEvent Where TimeWritten >= '" & dtmStartDate & "' AND EventType=1") 
+For Each objItem in colEvents
+    x = x & "<br><font color=red>EventCode=" & objItem.EventCode 
+    dtmConvertedDate.Value = objItem.TimeWritten
+    dtmDate = dtmConvertedDate.GetVarDate
+ x = x & " Source=" & objItem.SourceName & " Time=" & dtmDate
+    x = x & "</font><br>" & objItem.Message
+Next
+if x = "" AND OSNum > 17 then x = "<br>No errors found"
+if x = "" AND OSNum < 18 then x = "<br>Cannot request event errors for " & OSName & " systems"
+EventErrors = "<br><b>System Event Log Errors in the Last Week</b>" & x & "<br>"
+
+End Function
+
+' ---
+
+Function FirstEventErrors(strComputer)
+'List first 20 System Event Errors
+On Error Resume Next
+Set dtmConvertedDate = CreateObject("WbemScripting.SWbemDateTime")
+Set colLoggedEvents = objSWbemServices.ExecQuery  ("SELECT * FROM Win32_NTLogEvent WHERE Logfile = 'System'")
+intRecordNum = 0
+x = ""
+
+For Each objItem in colLoggedEvents
+ If objItem.EventType = 1 and intRecordNum < 20 Then
+ x = x & "<br><font color=red>EventCode=" & objItem.EventCode 
+ dtmConvertedDate.Value = objItem.TimeWritten
+ dtmDate = dtmConvertedDate.GetVarDate
+ x = x & " Source=" & objItem.SourceName & " Time=" & dtmDate
+ x = x & "</font><br>" & objItem.Message 
+ intRecordNum = intRecordNum +1
+ End If
+Next
+if x = "" AND OSNum > 17 then x = "<br>No errors found"
+if x = "" AND OSNum < 18 then x = "<br>Cannot request event errors for " & OSName & " systems"
+EventErrors = "<br><b>System Event Log Errors</b>" & x & "<br>"
+
+End Function
+
+' -----------------------
+
+Function ListPCI(strComputer)
+'List the PCI IDs in this system
+On error resume next
+Set colItems = objSWbemServices.ExecQuery("Select * from Win32_PnPEntity",,48)
+strMsg = "<br><b>PCI Device IDs</b><br>"
+For Each objItem in colItems
+ if mid(objitem.DeviceID,1,7)="PCI\VEN" then
+            strPCIID = formatPCIID(objItem.DeviceID)
+            'strPCIID = objItem.DeviceID
+            strPCIOUTPUT =  strPCIID & " " & objItem.Name 
+            strMsg=strMsg &  strPCIOUTPUT  & "<br>"
+ end if
+Next
+ListPCI=strMsg
+End Function
+
+'******************************************************
+'* Function to convert WMI PDI IDs to standard format *
+'******************************************************
+Function formatPCIID(strWMIPCIID)
+        formatPCIID = Mid(strWMIPCIID, 8, 5) & Mid(strWMIPCIID, 17, 5) & "_" & Mid(strWMIPCIID, 34, 4) & "_" & Mid(strWMIPCIID, 30, 4) & " "
+ if instr(1,formatPCIID,"_") = 1 then formatPCIID=Mid(formatPCIID,2)
+ End Function
+
+' --------------
+
+
+Function ListServerSW(strComputer)
+On error resume next
+'List installed software from the registry 
+  Set objSWbemServicesX = objSWbemLocator.ConnectServer(strComputer, "root\default", strUser, strPassword, "MS_409", "ntlmdomain:" + strDomain)
+  Set objReg = objSWbemServicesX.Get ("StdRegProv")
+  Const strBaseKey =  "SOFTWARE\Research Machines\Installation\Products\"
+  objReg.EnumKey HKLM, strBaseKey, arrSubKeys
+  For Each strSubKey In arrSubKeys
+ x=1 'set to 1 if all sections wanted or comment out and use tests above
+    If x > 0 then
+ strVValue=""
+ strDValue=""
+ strIValue=""
+ strSubKey1=""
+ objReg.GetStringValue HKLM, strBaseKey & strSubKey, "Version", strVValue
+ objReg.GetStringValue HKLM, strBaseKey & strSubKey, "Install Date", strDValue
+ 'main subkeys do not have an 'Install' parameter
+ if  strVValue <> "" then 'remove x from xcolor if red wanted for display
+ strM =  strM  & "<font xcolor=red>" & strSubKey & "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp" & " Version=" & strVValue & "&nbsp;&nbsp;&nbsp Install Date=" & strDValue & "<br></font>"
+ 'uncomment  line below if details wanted
+ objReg.EnumKey HKLM, strBaseKey & strSubKey & "\", arrSubKeys1
+ For each strSubKey1 in arrSubKeys1
+ strVValue=""
+ strDValue=""
+ objReg.GetStringValue HKLM, strBaseKey  & strSubKey   & "\" & strSubKey1 & "\", "ProductVersion", strVValue
+ objReg.GetStringValue HKLM, strBaseKey  & strSubKey   & "\" & strSubKey1 & "\", "Path", strDValue
+ If IsNull(strVvalue) then strVvalue=""
+ V=""
+ D=""
+ If strVvalue<>"N/A" then V="&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp Version=" & strVValue
+ If strDvalue<>"N/A" then D="&nbsp;&nbsp;&nbsp Path=" & strDValue
+ If strVValue <> "" Then strM =  strM & "&nbsp;&nbsp; " &  strSubKey1 & V & D & "<br>"
+ Next
+ End if
+ End If
+  Next
+
+  Set objSWbemServicesX = nothing
+
+If ltrim(trim(strM)) <> "" then 
+ strMsg = StrMsg  & strM
+ strMsg1 = "<b>Installed Software</b><br>"
+ ListServerSW=strMsg1 & strMsg 
+Else
+ ListServerSW=""
+End if
+
+
+End Function
+
+'======================================================================
+
+
+Function ListHSP(strComputer)
+On error resume next
+
+HSP=0
+HSPa=0
+
+  Set objSWbemServicesX = objSWbemLocator.ConnectServer(strComputer, "root\default", strUser, strPassword, "MS_409", "ntlmdomain:" + strDomain)
+  Set objReg = objSWbemServicesX.Get ("StdRegProv")
+
+  Const strBaseKey =  "SOFTWARE\Research Machines\Installation\Products\"
+  objReg.EnumKey HKLM, strBaseKey, arrSubKeys
+  For Each strSubKey In arrSubKeys
+    x = Instr(1,ucase(strSubKey),"HARDWARE SUPPORT PACK ")
+    If x > 0 then
+   y = mid(strSubKey,x+22) 'get HSP number
+      HSPa = Cint(y) 'as integer
+      if HSPa > HSP then 
+      HSP=HSPa
+      strVValue=""
+      strDValue=""
+      objReg.GetStringValue HKLM, strBaseKey & strSubKey, "Version", strVValue
+      objReg.GetStringValue HKLM, strBaseKey & strSubKey, "Install Date", strDValue 
+      If (strVValue <> "") and (strDValue <> "") Then strM =  strSubKey & "&nbsp;&nbsp;&nbsp Version=" & strVValue & "&nbsp;&nbsp;&nbsp Install Date=" & strDValue & "<br>"
+ End If
+ End If 
+  Next
+
+  Set objSWbemServicesX = nothing
+
+If ltrim(trim(strM)) <> "" then 
+ strMsg = StrMsg  & strM
+ strMsg1 = "<br><b>Latest Installed HSP is HSP" & HSP & "</b>"
+ ListHSP=strMsg1 & strMsg 
+Else
+ ListHSP=""
+End if
+
+
+End Function
+
+'=========================
+
+Function ListSW(strComputer)
+'List the software installed on the computer
+On error resume next
+
+Set colSoftware = objSWbemServices.ExecQuery("Select * from Win32_Product")
+if colSoftware.Count = 0 then  'Server 2003 does not respond to Win32_Product
+ strMsg = "<br><b>Installed Software and HotFixes</b><br>"
+ If strComputer="." then
+  strHost = "."
+  Set objReg = GetObject("winmgmts://" & strHost & "/root/default:StdRegProv")
+  Const strBaseKey =  "Software\Microsoft\Windows\CurrentVersion\Uninstall\"
+  objReg.EnumKey HKLM, strBaseKey, arrSubKeys
+  For Each strSubKey In arrSubKeys
+    intRet = objReg.GetStringValue(HKLM, strBaseKey & strSubKey, "DisplayName", strValue)
+    If intRet <> 0 Then intRet = objReg.GetStringValue(HKLM, strBaseKey & strSubKey, "QuietDisplayName", strValue) 
+    If (strValue <> "") and (intRet = 0) Then strM = strM & strValue & "<br>"
+  Next
+  End If
+  if strM="" then strMsg=StrMsg & "No or cannot retrieve installed software on this system"   else strMsg=StrMsg  & strM
+Else
+ strMsg = "<br><b>Installed Software</b>"
+ For Each objSoftware in colSoftware
+    SWMsg = SWMsg & "<br>" & objSoftware.Caption & " (" & objSoftware.Vendor  & ") v" & objSoftware.Version  
+ Next
+
+if SWMsg = "" then SWMsg = "No installed software found"
+
+strMsg = strMsg & SWMsg
+
+ 'Now get hotfixes installed
+ strMsg = strMsg & "<br><br><b>Hotfixes</b>" & vbCrLf 
+ Set colQuickFixes = objSWbemServices.ExecQuery("Select * from Win32_QuickFixEngineering" )
+ if colQuickFixes.Count = 0 then strMsg= StrMsg & "No or cannot retrieve installed software on this system"
+  For Each objQuickFix in colQuickFixes
+            if objQuickFix.Description <> "" then 
+                        desc = objQuickFix.Description
+                        if len(desc)>70 then desc = mid(desc,1,50) & "..."
+                        HFXMsg = HFXMsg & "<br>" & objQuickFix.HotFixID & " " & desc 
+            end if
+  Next
+
+End if
+
+if ltrim(trim(HFXMsg)) = "" then HFXMsg = "<br>No HotFixes found"
+
+ListSW=strMsg & HFXMsg & "<br>"
+
+End Function
+
+'======================================================================
+Function GetOSVer()
+dim shell, strOS, strVerKey, strVersion
+On error resume next
+
+Set dtmConvertedDate = CreateObject("WbemScripting.SWbemDateTime")
+Set objSWbemLocator = CreateObject("WbemScripting.SWbemLocator")
+
+Set colOperatingSystems = objSWbemServices.ExecQuery ("Select * from Win32_OperatingSystem")
+For Each objOperatingSystem in colOperatingSystems
+    dtmConvertedDate.Value = objOperatingSystem.InstallDate
+    dtmInstallDate = dtmConvertedDate.GetVarDate
+    if dtmInstallDate="" then dtmInstallDate="(unknown)"
+    Other = objOperatingSystem.OtherTypeDescription
+    org = objOperatingSystem.Organization
+    dtmConvertedDate.Value = objOperatingSystem.LastBootUpTime
+    BootTime = dtmConvertedDate.GetVarDate
+
+    x = x &  objOperatingSystem.Caption
+    x = x &   " - " & objOperatingSystem.CSDVersion
+    x = x &   " (version=" & objOperatingSystem.Version & " - run Winver for build number) "
+
+ OSNum = objOperatingSystem.OSType
+ OSName = OSType(objOperatingSystem.OSType)
+
+    IF objOperatingSystem.OSType <> 18 then x = x & "<br>OS Type=" & OSName & " " & Other
+    x = x & "<br>SKU=" & SKU(objOperatingSystem.OperatingSystemSKU) 'only for Vista+ OS's
+    if objOperatingSystem.ServicePackMajorVersion > 0 then x = x & "<br>Service Pack=v" & objOperatingSystem.ServicePackMajorVersion & "." & objOperatingSystem.ServicePackMinorVersion
+    x = x & "<br>Architecture=" & objOperatingSystem.OSArchitecture
+   ' x = x & "<br>Product Type=" & objOperatingSystem.ProductType
+    x = x & "<br>Install Date=" & dtmInstallDate 
+    x = x & "<br>Serial Number=" & objOperatingSystem.SerialNumber
+    x = x & "<br>Total Visible Memory=" & FormatNumber(objOperatingSystem.TotalVisibleMemorySize/1024,0) & "MB"
+    x = x & "<br>Free Physical Memory=" & FormatNumber(objOperatingSystem.FreePhysicalMemory/1024,1) & "MB"
+    x = x & "<br>Total Virtual Memory=" & FormatNumber(objOperatingSystem.TotalVirtualMemorySize/1024,0) & "MB"
+    x = x & "<br>Free Virtual Memory=" & FormatNumber(objOperatingSystem.FreeVirtualMemory/1024,0) & "MB"
+    x = x & "<br>Windows Directory=" & objOperatingSystem.WindowsDirectory
+    x = x & "<br>System Drive=" & objOperatingSystem.SystemDrive
+    if objOperatingSystem.Description <> "" then x = x & "<br>Description=" & objOperatingSystem.Description
+    x = x & "<br>Registered Owner=" & objOperatingSystem.RegisteredUser
+ CurrentUser = objOperatingSystem.RegisteredUser
+    if org <> "" then x = x & "<br>Registered Organisation=" & Org 
+
+
+    If BootTime <> "" then  x = x & "<br>Last Boot Up Time=" & BootTime
+ Next 
+GetOSVer = "<br><b>Operating System</b><br>" & x & "<br>"
+
+End Function
+
+'---
+
+Function OSType(n)
+if n=0 then OSType="Unknown"
+if n=1 then OSType="Non-Windows"
+if n=14 then OSType="MSDOS"
+if n=15 then OSType="Win3x"
+if n=16 then OSType="Win95"
+if n=17 then OSType="Win98"
+if n=18 then OSType="WinNT/XP"
+if n=19 then OSType="WinCE"
+if n=21 then OSType="Netware"
+if n=30 then OSType="SunOS"
+if n=36 then OSType="Linux"
+if n=42 then OSType="FreeBSD"
+End Function
+
+'---
+
+Function SKU(n)
+SKU=""
+if n=0 then SKU="Undefined"
+if n=1 then SKU="Ultimate Edition"
+if n=2 then SKU="Home Basic Edition"
+if n=3 then SKU="Home Basic Premium Edition"
+if n=4 then SKU="Enterprise Edition"
+if n=5 then SKU="Home Basic N Edition"
+if n=6 then SKU="Business Edition"
+if n=7 then SKU="Standard Server Edition"
+if n=8 then SKU="Datacenter Server Edition"
+if n=9 then SKU="Small Business Server Edition"
+if n=10 then SKU="Enterprise Server Edition"
+if n=11 then SKU="Starter Edition"
+if n=12 then SKU="Datacenter Server Core Edition"
+if n=13 then SKU="Standard Server Core Edition"
+if n=14 then SKU="Enterprise Server Core Edition"
+if n=15 then SKU="Enterprise Server Edition for Itanium-Based Systems"
+if n=16 then SKU="Business N Edition"
+if n=17 then SKU="Web Server Edition"
+if n=18 then SKU="Cluster Server Edition"
+if n=19 then SKU="Home Server Edition"
+if n=20 then SKU="Storage Express Server Edition"
+if n=21 then SKU="Storage Standard Server Edition"
+if n=22 then SKU="Storage Workgroup Server Edition"
+if n=23 then SKU="Storage Enterprise Server Edition"
+if n=24 then SKU="Server For Small Business Edition"
+if n=25 then SKU="Small Business Server Premium Edition"
+if n=26 then SKU="Home Premium N"
+if n=27 then SKU="Enterprise N"
+if n=28 then SKU="Ultimate N"	
+if n=29 then SKU="Web Server (core installation)"
+if n=30 then SKU="Windows Essential Business Server Management Server"
+if n=31 then SKU="Windows Essential Business Server Security Server"
+if n=32 then SKU="Windows Essential Business Server Messaging Server"
+if n=33 then SKU="Server Foundation"
+if n=34 then SKU="Windows Home Server 2011"
+if n=35 then SKU=" Windows Server 2008 without Hyper-V for Windows Essential Server Solutions"
+if n=36 then SKU="Server Standard without Hyper-V"
+if n=37 then SKU="Server Datacenter without Hyper-V (full installation)"
+if n=38 then SKU="Server Enterprise without Hyper-V (full installation)"
+if n=39 then SKU="Server Datacenter without Hyper-V (core installation)"
+if n=40 then SKU="Server Standard without Hyper-V (core installation)"	
+if n=41 then SKU="Server Enterprise without Hyper-V (core installation)"	
+if n=42 then SKU="Microsoft Hyper-V Server"	
+if n=43 then SKU="Storage Server Express (core installation)"	
+if n=44 then SKU="Storage Server Standard (core installation)"	
+if n=45 then SKU="Storage Server Workgroup (core installation)"	
+if n=46 then SKU="Storage Server Enterprise (core installation)"	
+if n=47 then SKU="Starter N"	
+if n=48 then SKU="Professional"	
+if n=49 then SKU="Professional N"	
+if n=50 then SKU="Windows Small Business Server 2011 Essentials"	
+if n=51 then SKU="Server For SB Solutions"	
+if n=52 then SKU="Server Solutions Premium"	
+if n=53 then SKU="Server Solutions Premium (core installation)"	
+if n=54 then SKU="Server For SB Solutions EM"
+if n=55 then SKU="Server For SB Solutions EM"	
+if n=56 then SKU="Windows MultiPoint Server"
+if n=59 then SKU="Windows Essential Server Solution Management"	
+if n=60 then SKU="Windows Essential Server Solution Additional"
+if n=61 then SKU="Windows Essential Server Solution Management SVC"	
+if n=62 then SKU="Windows Essential Server Solution Additional SVC"	
+if n=63 then SKU="Small Business Server Premium (core installation)"	
+if n=64 then SKU="Server Hyper Core V"	
+if n=66 then SKU="Starter E"	
+if n=67 then SKU="Home Basic E"	
+if n=68 then SKU="Home Premium E"	
+if n=69 then SKU="Professional E"	
+if n=70 then SKU="Enterprise E"	
+if n=71 then SKU="Ultimate E"
+if n=72 then SKU="Server Enterprise (evaluation installation)"
+if n=76 then SKU="Windows MultiPoint Server Standard (full installation)"
+if n=77 then SKU="Windows MultiPoint Server Premium (full installation)"
+if n=79 then SKU="Server Standard (evaluation installation)"
+if n=80 then SKU="Server Datacenter (evaluation installation)"
+if n=84 then SKU="Enterprise N (evaluation installation)"	
+if n=95 then SKU="Storage Server Workgroup (evaluation installation)"
+if n=96 then SKU="Storage Server Standard (evaluation installation)"
+if n=98 then SKU="Windows N"
+if n=99 then SKU="Windows China"
+if n=100 then SKU="Windows Single Language"
+if n=101 then SKU="Windows"	
+if n=103 then SKU="Professional with Media Center"
+
+if SKU="" then SKU="Unknown (" & n & ")"
+
+SKU=SKU & " (" & n & ")"
+
+End Function
+
+
+'=======================================================================
+Function GetComputerName( )
+ On Error Resume Next
+
+Set colItems = objSWbemServices.ExecQuery( "Select * from Win32_ComputerSystem", , wbemFlagReturnImmediately + wbemFlagForwardOnly )
+ For Each objItem in colItems
+ GetComputerName = objItem.Name
+ Next
+End Function
+
+
+' -------------------------------------------------------------------------
+
+Function GetProblemDev(strComp)
+'List Problem Devices in Device manager
+On Error Resume Next
+Set colItems = objSWbemServices.ExecQuery("Select * from Win32_PnPEntity " &_
+ " WHERE ConfigManagerErrorCode <> 0 AND NOT PNPDeviceID like 'SW%{B7EAFDC0-A680-11D0-96D8-00AA0051E51D}%'" , , wbemFlagReturnImmediately + wbemFlagForwardOnly)
+
+For Each objItem in colItems
+ strErrorReason = ""
+ Select Case objItem.ConfigManagerErrorCode
+ Case 1
+ strErrorReason = "DEVICE IS NOT CONFIGURED CORRECTLY"
+ Case 2
+ strErrorReason = "WINDOWS CANNOT LOAD THE DRIVER FOR THIS DEVICE"
+ Case 3
+ strErrorReason = "DEVICE ENABLED BUT NOT WORKING"
+ Case 4
+ strErrorReason = "DEVICE IS NOT WORKING - DRIVERS OR REGISTRY MAY BE CORRUPT"
+ Case 5 
+ strErrorReason = "DRIVER FOR THIS DEVICE NEEDS A RESOURCE THAT WINDOWS CANNOT MANAGE"
+ Case 6
+ strErrorReason = "THE BOOT CONFIGURATION FOR THIS DEVICE CONFLICTS WITH OTHER DEVICES"
+ Case 7
+ strErrorReason = "CANNOT FILTER"
+ Case 8
+ strErrorReason = "THE DRIVER LOADER FOR THE DEVICE IS MISSING"
+ Case 9
+ strErrorReason = "DEVICE NOT WORKING AS CONTROLLING FIRMWARE REPORTS INCORRECT RESOURCE"
+ Case 10
+ strErrorReason = "THIS DEVICE CANNOT START"
+ Case 11
+ strErrorReason = "THIS DEVICE FAILED"      
+ Case 12
+ strErrorReason = "DEVICE CANNOT FIND ENOUGH FREE RESOURCE FOR IT TO USE"
+ Case 13
+ strErrorReason = "WINDOWS CANNOT VERIFY THIS DEVICES RESOURCES"   
+ Case 14
+ strErrorReason = "DEVICE CANNOT WORK PROPERLY UNTIL THE COMPUTER IS RESTARTED"
+ Case 15
+ strErrorReason = "DEVICE CANNOT WORK BECAUSE THERE IS A A RE-ENUMERATION PROBLEM"
+ Case 16
+ strErrorReason = "WINDOWS CANNOT IDENTIFY ALL THE RESOURCES THIS DEVICE USES"
+ Case 17
+ strErrorReason = "DEVICE IS ASKING FOR AN UNKNOWN RESOURCE TYPE"
+ Case 18
+ strErrorReason = "REINSTALL THE DRIVER FOR THIS DEVICE"   
+ Case 19
+ strErrorReason = "FAILURE USING THE VXD LOADER"    
+ Case 20
+ strErrorReason = "REGISTRY MIGHT BE CORRUPTED"           
+ Case 21
+ strErrorReason = "SYSTEM FAILURE: CHANGE THE DRIVER FOR THIS DEVICE"
+ Case 22
+ strErrorReason = "DEVICE IS DISABLED"
+ Case 23
+ strErrorReason = "SYSTEM FAILURE: CHANGE THE DRIVER FOR THIS DEVICE"
+ Case 24
+ strErrorReason = "DEVICE IS NOT PRESENT, NOT WORKING OR DRIVER IS NOT INSTALLED"
+ Case 25
+ strErrorReason = "WINDOWS IS STILL SETTING UP THIS DEVICE"
+ Case 26
+ strErrorReason = "WINDOWS IS STILL SETTING UP THIS DEVICE"            
+ Case 27
+ strErrorReason = "DEVICE DOES NOT HAVE A VALID LOG CONFIGURATION"
+ Case 28
+ strErrorReason = "DRIVERS FOR THIS DEVICE ARE NOT INSTALLED"  
+ Case 29
+ strErrorReason = "DEVICE IS DISABLED AS THE FIRMWARE DID NOT GIVE IT THE REQUIRED RESOURCE"
+ Case 30
+ strErrorReason = "DEVICE IS USING AN INTERRUPT REQUEST (IRQ) RESOURCE THAT ANOTHER DEVICE IS USING"
+ Case 31
+ strErrorReason = "DEVICE IS NOT WORKING AS WINDOWS CANNOT LOAD DRIVERS REQUIRED FOR IT"
+ Case Else
+ strErrorReason = "PROBLEM DEVICE - REASON UNKNOWN"
+ End Select
+
+ T =   "<br><b><font color=red>ERROR " & objItem.ConfigManagerErrorCode & ": " & strErrorReason & "</font></b> " & T
+ If strErrorReason <> "" Then 
+ T = T & " <font color=violet>" & objItem.Description  & "</font> "
+ T = T & "<br>" & objItem.DeviceID 
+ End If
+ S = S & T
+Next
+
+if S = "" then S = "<br>No problem devices found" & "<br>"
+GetProblemDev = "<br><b>Problem Devices or Drivers</b>" & S & "<br>"
+
+End Function
+
+' -------------------------------------------------------------------------
+
+Function LogFile( x ) 
+'Log results to a file
+Dim objFS, objTestLog, objWMIService
+On Error Resume Next
+if x<>"" then
+    MyFile = InputBox ("Enter Filename (xxx.htm)","Save " & MySN & " as File","D:\" & MySN & ".htm")
+    if MyFile <> "" then
+ Set ObjFS = CreateObject("Scripting.FileSystemObject")
+ Set ObjTestLog = objFS.CreateTextFile(MyFile)
+ ObjTestLog.WriteLine x
+ Set ObjFS = Nothing
+ Set ObjTestLog = Nothing
+ If err.number <> vbEmpty then Msgbox "Error: Folder may not exist or you do not have write access permission (Error " & err.number & ")",48
+
+    end if
+end if
+
+End Function
+
+
+' -------------------------------------------------------------------------
+
+Function ListAccounts()
+'List computers in a domain
+On Error Resume Next
+if strDomain="" then strDomain="WORKGROUP"
+strDomain = inputbox ("Enter Domain name (e.g. WORKGROUP)","List Computers",strDomain)
+if strDomain <> "" then
+Set objDomain = GetObject("WinNT://" & strDomain ) 
+objDomain.Filter = Array("computer") 
+For Each Computer In objDomain 
+ y= y & "<Font color = fuchsia>" & Computer.Name  & "</Font> , "
+Next
+ x = "<b>Computers in the domain: " & UCase(strDomain) & "</b><b><font color=red><br>"
+ AccountArea.InnerHtml = x & y & "</b></font>"
+End if
+End function
+
+' -------------------------------------------------------------------------
+
+Function SetName()
+'Get the info from a remote computer
+On Error Resume Next
+if Ausername.value <> "" and Adomain.value <> "" and AComputer.value <> "" then
+  strUser = AUsername.value
+  strDomain = Adomain.value
+  strPassword = APAssword.value
+  strComputer = AComputer.value
+ if strComputer <> "" then 
+ ExtraList = Checkbox2.checked
+ DataArea.InnerHtml = "Accessing remote computer " & UCase(strComputer) & " - please wait..."
+ If ExtraList Then MsgBox "Please be patient - this may take some time!"
+ x = GetWo()
+ if x = -2147024891 then x = "Computer was found but access was denied!"
+ if x = -2147023174 then x = "Computer not found in domain " & UCase(strDomain)
+ if x = -2147217308 then x = "User credentials cannot be used for local computer"
+ if x="OK" then x = GetInfo() else x = "Error accessing " & UCase(strComputer) & " - Error: " & x
+        DataArea.InnerHtml = x
+ end if
+end if
+
+End function
+
+' -------------------------------------------------------------------------
+
+Function GetDrivers(strComp)
+Dim  propValue, colItems, strDesc, strDrvVer, strDrvDate, strInf, strIsSigned, strFailure
+Dim DriverTable
+'List MS drivers and 3rd party drivers - indicate if signed or not
+
+On Error Resume Next
+Set colItems = objSWbemServices.ExecQuery("Select * from Win32_PnPSignedDriver WHERE InfName Like '%.inf%'","WQL",48)
+For Each objItem in colItems
+    if instr(1,ucase(objItem.InfName),"OEM")=1 then
+     strDrvDate = WMIDateStringToDate(objItem.DriverDate) 
+     if objItem.IsSigned then sig="Signed" else sig="UNSIGNED"
+     DriverTable = DriverTable & LogDrvVer(objItem.Description, objItem.DriverVersion, strDrvDate, objItem.InfName, sig, objItem.DeviceID)
+    end if
+Next
+Set colItems = Nothing
+Set objWMIService = Nothing
+
+x = "<br><b>Installed Third Party Drivers</b><br>The following drivers are not 'In-Box' Windows drivers:" & DriverTable & "<br>"
+DriverTable=""
+Set colItems = objSWbemServices.ExecQuery("Select * from Win32_PnPSignedDriver WHERE InfName Like '%.inf%'","WQL",48)
+For Each objItem in colItems
+    if instr(1,ucase(objItem.InfName),"OEM")<>1 then
+     strDrvDate = WMIDateStringToDate(objItem.DriverDate) 
+     if objItem.IsSigned then sig="Signed" else sig="UNSIGNED"
+     DriverTable = DriverTable & LogDrvVer(objItem.Description, objItem.DriverVersion, strDrvDate, objItem.InfName, sig, objItem.DeviceID)
+    end if
+Next
+Set colItems = Nothing
+Set objWMIService = Nothing
+GetDrivers = x & "<br><br><b>Installed In-Box Drivers</b><br>The following drivers are 'In Box' Windows drivers:" & DriverTable & "<br>"
+End Function
+
+' -------------------------------------------------------------------------
+'  Function to convert date string to correct format
+' -------------------------------------------------------------------------
+Function WMIDateStringToDate(dtmWMIDate)
+If Not IsNull(dtmWMIDate) Then
+ WMIDateStringToDate = CDate(Mid(dtmWMIDate, 5, 2) & "/" &_
+ Mid(dtmWMIDate, 7, 2) & "/" & Left(dtmWMIDate, 4) & " " & Mid (dtmWMIDate, 9, 2) & ":" &_
+ Mid(dtmWMIDate, 11, 2) & ":" & Mid(dtmWMIDate,13, 2))
+End If
+End Function
+
+' -------------------------------------------------------------------------
+' log driver versions to file
+' -------------------------------------------------------------------------
+Function LogDrvVer(strDesc, strDrvVer, strDrvDate, strInf, strDrvSig, xx) 
+
+myredon = "<a style=" & chr(34) & "color: red " & chr(34) & "><b>"
+myfon = "<a style=" & chr(34) & "color: violet " & chr(34) & "><b>"
+myoff = "</a></b>"
+mypad = "&nbsp;&nbsp;&nbsp;"
+LogDrvVer=  myredon & "<br>" & strDesc  & mypad & myoff & myfon &" v." & strDrvVer  & mypad & strDrvDate & myoff & "<br>" & strDrvSig  & " " & xx 
+
+End Function
+
+' -------------------------------------------------------------------------
+'  Subroutine to set length of string variables
+' -------------------------------------------------------------------------
+
+Sub VarLength(strString, intMaxCha, intSpaces)
+Dim intTemp,i
+on error resume next
+strString=strString & "" 'force it to be a string
+intTemp=0
+strString = Left(strString, intMaxCha)
+intTemp = intSpaces + intMaxCha - (Len(strString))
+For i = 0 To intTemp
+ strString = strString & "&nbsp;"
+Next
+End Sub
+
+' -------------------------------------------------------------------------
+
+Function InventoryCDR( strComputer )
+On Error Resume Next
+cntCDR=0
+Set colItems      = objSWbemServices.ExecQuery( "SELECT * FROM Win32_CDROMDrive", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem In colItems
+ ' Parse the PNP Device ID string to get the interface and firmware revision
+ ' Example:
+ ' IDE\CDROM_NEC_DVD_RW_ND-3520AW___________________3.05____\5&2E27B08F&0&0.0.0
+ ' ===  <-  interface                               ====  <-  firmware revision
+ ' The array arrDevID will contain 3 elements: "IDE",
+ ' "CDROM_NEC_DVD_RW_ND-3520AW___________________3.05____" and "5&2E27B08F&0&0.0.0"
+
+ arrDevID     = Split( objItem.DeviceID, "\", 3, vbTextCompare )
+ strInterface = arrDevID(0)
+ strDeviceId  = arrDevID(1)
+
+ ' In our example, strDeviceID will contain "CDROM_NEC_DVD_RW_ND-3520AW___________________3.05____"
+ ' The array arrFirmware will contain the elements "CDROM", "NEC", "DVD", "RW", "ND-3520AW", "3.05" and ""
+ ' strFirmware is assigned the value of the last non-empty element in the array
+
+ arrFirmware  = Split( strDeviceId, "_", -1, vbTextComapre )
+ cnt = 0
+ For Each strElement In arrFirmware
+   If strElement <> vbNul Then strFirmware = strElement
+   if cnt < 4 then CDName = CDName & " " & strElement
+   cnt = cnt + 1
+ Next
+
+ if objItem.Name <> "" then CDName = ""    'no need if valid CDName
+   x = x & "<br>" &  objItem.Name & " [" & trim(CDName)
+   x = x & "Firmware=" &  strFirmware & "]"
+ 
+Next
+
+InventoryCDR= "<br><b>Optical Drives</b>" & x  & "<br>"
+
+End Function
+
+'-----------
+
+Function InventoryVideo( strComputer )
+ On Error Resume Next
+
+Set colItems = objSWbemServices.ExecQuery( "Select * from Win32_VideoController","WQL" , wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem in colItems
+ if objItem.Name <> "" then
+ x = x &  "<br>" & objItem.Name
+ x = x &  " - " & objItem.VideoModeDescription
+ x = x & " (" & Round( objItem.AdapterRAM / 1048576 ) & "MB)"
+ End If
+Next
+InventoryVideo= "<br><b>Video</b>" & x & "<br>"
+
+End Function
+
+'--------
+
+Function InventorySound( strComputer )
+On Error Resume Next
+
+Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_SoundDevice", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem In colItems
+ x = x &  "<br>" & objItem.Manufacturer
+ x = x &  " " & objItem.ProductName
+Next
+if x = "" then x = "<br>No Audio devices detected"
+InventorySound  = "<br><b>Audio</b>" & x & "<br>"
+
+End Function
+
+' ___________
+
+Function InventoryTapeDrive ( strComputer )
+
+Set colItems = objSWbemServices.ExecQuery("Select * from Win32_TapeDrive")
+For Each objItem In colItems
+  Caption=ltrim(objItem.Caption)
+  Ecode=objItem.ConfigManagerErrorCode
+  If Ecode=0 then Estr="OK"
+  If Ecode=1 then Estr="Not Configured correctly"
+  If Ecode>1 then Estr="Windows driver/resources fault"
+  If Ecode=7 then Estr="Cannot filter"
+  If Ecode=9 then Estr="Device not working correctly - bad firmware?"
+  If Ecode=10 then Estr="Device cannot start"
+  If Ecode=11 then Estr="Device Failed"
+  If Ecode=14 then Estr="Not working - Restart required"
+  If Ecode=15 then Estr="Device detection problem?"
+  If Ecode=31 then Estr="Cannot load device drivers"
+  If Ecode=30 then Estr="IRQ resource clash"
+  If Ecode=29 then Estr="Device disabled - firmware bad?"
+  If Ecode=24 then Estr="Not present or missing drivers"
+  If Ecode=22 then Estr="Device is disabled"
+'Desc=ltrim(objItem.Description) & ""
+'ID=ltrim(objItem.Id) & ""
+  Mfr=ltrim(objItem.Manufacturer) & ""
+'Name=ltrim(objItem.Name) & ""
+  BoolClean=ObjItem.NeedsCleaning
+  if BoolClean then Clean="TAPE DRIVE NEEDS CLEANING" else Clean=""
+  Status = ltrim(objItem.Status) & ""
+  SysName=ltrim(objItem.SystemName) & ""
+
+  if caption<>""  then  x = x & "<br><b><font color=red>" & Caption & "</font></b>" 
+'if Desc<>""     then  x = x & "<br>Description=" & Desc
+  if SysName<>""  then  x = x & "<br>System Name=" & SysName
+'if Name<>""     then  x = x & "<br>Name=" & Name
+'if ID<>""       then  x = x & "<br>ID=" & ID
+  if Mfr<>""      then  x = x & "<br>Manufacturer=" & Mfr
+  if ECode<>""    then  x = x & "<br>Error Status=" & ECode
+  if Clean <> ""  then  x = x & "<br>Cleaning status=" & Clean
+  if Status <> "" then  x = x & "<br>Tape Drive Status=" & Status
+
+Next
+
+if x = "" then x = "<br>No tape drives found" 
+InventoryTapeDrive = "<br><b>Tape Drives</b>" & x & "<br>"
+
+End Function
+
+'_________________
+
+Function InventoryNIC( strComputer )
+On Error Resume Next
+
+'Modified to work for 98 and XP systems 
+  
+Set col1Items = objSWbemServices.ExecQuery( "SELECT * FROM Win32_NetworkAdapter", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+ For Each obj1Item In col1Items
+ if instr(1,obj1Item.PNPDeviceID,"USB\") OR ( obj1item.Manufacturer <> "Microsoft" AND obj1item.MACAddress <> "" AND instr(1,obj1item.AdapterType,"thernet") ) then 
+  x  = x  &  "<br>" & obj1Item.ProductName 
+  y = GetNICSpeed( obj1Item.ProductName, StrComputer )
+  if y <> "" then x = x & " (" & y  & ")"
+  x = x & " MAC=" &  Join( Split( obj1Item.MACAddress, ":", -1, vbTextCompare ), "" )
+  end if
+ Next
+
+InventoryNIC = "<b><br>Network Adapters</b>" & x & "<br>"
+
+InventoryNIC = InventoryNIC & ListIPAdds(strComputer) & "<br>" 'get IP addresses
+
+End Function
+
+'_________________
+
+Function GetNICSpeed( strInstance, strComputer )
+On Error Resume Next
+Set objSWbemServices2 = objSWbemLocator.ConnectServer( strComputer,"root\WMI", strUser, strPassword, "MS_409", "ntlmdomain:" + strDomain)
+Set col2Items = objSWbemServices2.ExecQuery( "SELECT * FROM MSNdis_LinkSpeed WHERE InstanceName LIKE '" & strInstance & "' AND Active = True", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each obj2Item In col2Items
+ If obj2Item.NdisLinkSpeed < 10000 Then strNICSpeed = obj2Item.NdisLinkSpeed /    10 & " Kb/s"
+ If obj2Item.NdisLinkSpeed > 9999  Then strNICSpeed = obj2Item.NdisLinkSpeed / 10000 & " Mb/s"
+ If obj2Item.NdisLinkSpeed < 100   Then strNICSpeed = obj2Item.NdisLinkSpeed
+Next
+GetNICSpeed = strNICSpeed
+
+End Function
+
+'----
+
+Function ListIPAdds( strComputer )
+on error resume next
+
+ListIPAdds = ""
+Set IPConfigSet = objSWbemServices.ExecQuery ("Select * from Win32_NetworkAdapterConfiguration where IPEnabled=TRUE",,48) 
+   For Each IPConfig In IPConfigSet 
+        If Not IsNull(IPConfig.IPAddress) Then 
+            For i=LBound(IPConfig.IPAddress) To UBound(IPConfig.IPAddress) 
+ if LastMac <> IPConfig.MACAddress then ListIPAdds = ListIPAdds &  "<br>MAC Address " & IPConfig.MACAddress & " is using IP address: " & IPConfig.IPAddress(i)  &  " Subnet: " & IPConfig.IPSubnet(i) 
+ LastMac = IPConfig.MACAddress
+            Next 
+        End If 
+    Next
+End Function
+
+'_________________
+
+Function InventoryMem( strComputer )
+On Error Resume Next
+
+cntMem=0
+sizMem=0
+' Capacity filter intended for HP/COMPAQ EVO models
+Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_PhysicalMemory  WHERE Capacity > 524288", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly)
+For Each objItem in colItems
+    x = Round(objItem.capacity / 1048576 ) & "MB"
+    if objItem.Speed <> "" then s = " (speed=" & objItem.Speed & ")"
+    y = trim(objItem.BankLabel)
+    if y <> "" then y = y & "="
+    sno=ltrim(trim(objitem.SerialNumber))
+    pno = ltrim(trim(objitem.PartNumber))
+    if pno & sno <> "" then
+     if sno <> "" then sno = " SNo=" & sno
+     if pno <> "" then pno = "Pno=" & pno
+     sno = " (" & pno & sno & ")"
+    end if
+    sData = sData & "<br>" & y & x & sno
+    cntMem = cntMem + 1
+    sizMem = sizMem + objItem.Capacity
+Next
+MemoryModules = cntMem 
+MemorySize    = Round( sizMem / 1048576 )
+MemoryBanks=-1
+Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_PhysicalMemoryArray", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem In colItems
+ if objItem.MemoryDevices > MemoryBanks then MemoryBanks = objItem.MemoryDevices
+Next
+InventoryMem  =  "<br><b>Memory</b><br>"
+if MemoryBanks > -1 then InventoryMem = InventoryMem & "Total Memory slots=" & MemoryBanks & "<br>Empty Memory slots=" & MemoryBanks - MemoryModules 
+InventoryMem = InventoryMem & "<br>Used Memory slots=" &  MemoryModules & "<br>Total Memory=" & MemorySize & "MB"
+InventoryMem = InventoryMem  & sData & "<br>"
+
+End Function
+'_________________
+
+Function Lpad (MyValue, MyPadChar, MyPaddedLength)
+    Lpad = string(MyPaddedLength - Len(MyValue),MyPadChar) & MyValue
+End Function
+'_________________
+
+Function Rpad (MyValue, MyPadChar, MyPaddedLength)
+    Rpad = MyValue & string(MyPaddedLength - Len(MyValue), MyPadChar)
+End Function
+'_________________
+
+Private Function PadSpace( strInput1, Length )
+ ' Replace spaces with &nbsp
+ 'note due to proportional typefont, spaces will not take up as much space as an M say!
+ On Error Resume Next
+ strInput = RPad(strInput1," ", Length) 'pad string to n chars
+ For i = 1 to Len(strInput)
+ x=Mid( strInput, i,1 )
+ if x = " " then PadSPace = PadSpace & "&nbsp;" else PadSpace=PadSpace & x
+ Next
+ End Function
+
+'_________________
+
+Private Function Strip( strInput )
+ ' Strip leading spaces
+ On Error Resume Next
+ Do While Left( strInput, 1 ) = " "
+ strInput = Mid( strInput, 2 )
+ Loop
+ Strip = strInput
+End Function
+
+'___________________
+
+Function InventoryMon( strComputer )
+On Error Resume Next
+
+'some code by Michael Baird with thanks
+
+Dim strarrRawEDID()
+intMonitorCount=0
+sBaseKey = "SYSTEM\CurrentControlSet\Enum\DISPLAY\"
+Set oRoot = objSWbemLocator.ConnectServer(strComputer, "root\default", strUser, strPassword, "MS_409", "ntlmdomain:" + strDomain)
+set oRegistry = oRoot.Get("stdregprov")
+'enumerate all the keys HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\
+iRC = oRegistry.EnumKey(HKLM, sBaseKey, arSubKeys)
+For Each sKey In arSubKeys
+'we are now in the registry at the level of:
+'HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<VESA_Monitor_ID\
+'we need to dive in one more level and check the data of the "HardwareID" value
+    sBaseKey2 = sBaseKey & sKey & "\"
+    iRC2 = oRegistry.EnumKey(HKLM, sBaseKey2, arSubKeys2)
+    For Each sKey2 In arSubKeys2
+'now we are at the level of:
+'HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<VESA_Monitor_ID\<PNP_ID>\
+'so we can check the "HardwareID" value
+        oRegistry.GetMultiStringValue HKLM, sBaseKey2 & sKey2 & "\", "HardwareID", sValue
+        for tmpctr=0 to ubound(svalue)
+            if lcase(left(svalue(tmpctr),8))="monitor\" then
+'if it is a monitor we will check for the existance of a control subkey
+'that way we know it is an active monitor
+              sBaseKey3 = sBaseKey2 & sKey2 & "\"
+              iRC3 = oRegistry.EnumKey(HKLM, sBaseKey3, arSubKeys3)
+              For Each sKey3 In arSubKeys3
+                if skey3="Control" then
+'if the Control sub-key exists then we should read the edid info 
+                   oRegistry.GetBinaryValue HKLM, sbasekey3 & "Device Parameters\", "EDID", arrintEDID
+                      if vartype(arrintedid) <> 8204 then 'and if we don't find it...
+                        strRawEDID="EDID Not Available" 'store an "unavailable message
+                      else
+                        for each bytevalue in arrintedid 'otherwise conver the byte array from the registry into a string (for easier processing later)
+                          strRawEDID=strRawEDID & chr(bytevalue)
+                        next
+                      end If
+'now take the string and store it in an array, that way we can support multiple monitors
+                      redim preserve strarrRawEDID(intMonitorCount)
+                      strarrRawEDID(intMonitorCount)=strRawEDID
+                      intMonitorCount=intMonitorCount+1
+                      end if
+                      next
+            end if
+        next
+        
+    Next 
+Next
+'*****************************************************************************************
+'now the EDID info for each active monitor is stored in an array of strings called strarrRawEDID
+'so we can process it to get the good stuff out of it which we will store in a 5 dimensional array
+'called arrMonitorInfo, the dimensions are as follows:
+'0=VESA Mfg ID, 1=VESA Device ID, 2=MFG Date (M/YYYY),3=Serial Num (If available),4=Model Descriptor
+'5=EDID Version
+'*****************************************************************************************
+
+redim arrMonitorInfo(intMonitorCount-1,7)
+dim location(3)
+for tmpctr=0 to intMonitorCount-1
+if strarrRawEDID(tmpctr) <> "EDID Not Available" then
+'*********************************************************************
+'first get the model and serial numbers from the vesa descriptor
+'blocks in the edid. the model number is required to be present
+'according to the spec. (v1.2 and beyond)but serial number is not
+'required. There are 4 descriptor blocks in edid at offset locations
+'&H36 &H48 &H5a and &H6c each block is 18 bytes long
+'*********************************************************************
+location(0)=mid(strarrRawEDID(tmpctr),&H36+1,18)
+location(1)=mid(strarrRawEDID(tmpctr),&H48+1,18)
+location(2)=mid(strarrRawEDID(tmpctr),&H5a+1,18)
+location(3)=mid(strarrRawEDID(tmpctr),&H6c+1,18)
+
+
+'54�71: Descriptor Block 1
+'  54�55: Pixel Clock (in 10 kHz) or 0
+ ' If Pixel Clock is non null:
+ '   56: Horizontal Active (in pixels)
+ '   57: Horizontal Blanking (in pixels)
+ '   58: Horizontal Active high (4 upper bits)
+ '       Horizontal Blanking high (4 lower bits)
+ '   59: Vertical Active (in pixels)
+ '   61: Vertical Active high (4 upper bits)
+ '       Vertical Blanking high (4 lower bits)
+ 
+ssd = mid(strarrRawEDID(tmpctr),&H18+1,1) '18h bit 1 set = preferred timing (native res)
+ssd = asc(ssd) AND &H02
+if ssd = 2 then 
+ ssd = mid(strarrRawEDID(tmpctr),56+1,1) 'get first byte LSB
+ ssxx = Asc(ssd)  'get LSB
+ ssd = mid(strarrRawEDID(tmpctr),58+1,1) 'get upper 4 bits in  byte
+ ssd = Asc(ssd) And &Hf0
+ ssxx = ssxx + ssd * 16
+ 
+ ssd = mid(strarrRawEDID(tmpctr),59+1,1) 'get vert
+ ssy = asc(ssd) 'get LSB
+ ssd = mid(strarrRawEDID(tmpctr),61+1,1) 'get upper 4 bits in  byte
+ ssd = Asc(ssd) And &Hf0
+ ssy = ssy + ssd * 16
+ tmpnative = ssxx & " x " & ssy
+ 
+'Now report size of screen
+'66 42 Horizontal Image Size = xxx mm (lower 8 bits)
+'67 43 Vertical Image Size = xxx mm (lower 8 bits)
+'68 44 Horizontal & Vertical Image Size (upper 4:4 bits) 
+ ssd = mid(strarrRawEDID(tmpctr),66+1,1) 'get LSB Hsize
+ ssH = Asc(ssd)
+ ssd = mid(strarrRawEDID(tmpctr),68+1,1) 'get MSB Hsize
+ ssd = asc(ssd) And &HF0
+ ssH = ssH + ssd * 16 'get H size
+ 
+ ssd = mid(strarrRawEDID(tmpctr),67+1,1) 'get LSB Hsize
+ ssV = Asc(ssd)
+ ssd = mid(strarrRawEDID(tmpctr),68+1,1) 'get MSB Hsize
+ ssd = asc(ssd) And &H0F
+ ssV = ssV + ssd * 256 'get H size
+ tmpScrSize = ssH & "mm x " & ssV & "mm "
+'print diagonal size of screen
+   diag = ssH*ssH + ssV*ssV
+   diag = Sqr(diag) * 0.0394
+   diag = int(diag  + 0.5) 'round to nearest inch
+   tmpScrSize = tmpScrSize & "(" & diag & " inch screen)"
+Else
+ tmpnative = "Not reported"
+End if
+
+'you can tell if the location contains a serial number if it starts with &H00 00 00 ff
+strSerFind=chr(&H00) & chr(&H00) & chr(&H00) & chr(&Hff)
+'or a model description if it starts with &H00 00 00 fc
+strMdlFind=chr(&H00) & chr(&H00) & chr(&H00) & chr(&Hfc)
+    
+intSerFoundAt=-1
+intMdlFoundAt=-1
+for findit = 0 to 3
+  if instr(location(findit),strSerFind)>0 then
+  intSerFoundAt=findit
+  end if
+  if instr(location(findit),strMdlFind)>0 then
+    intMdlFoundAt=findit
+  end if
+next
+
+'if a location containing a serial number block was found then store it
+if intSerFoundAt<>-1 then
+  tmp=right(location(intSerFoundAt),14)
+  if instr(tmp,chr(&H0a))>0 then
+    tmpser=trim(left(tmp,instr(tmp,chr(&H0a))-1))
+  else
+    tmpser=trim(tmp)
+  end if
+'although it is not part of the edid spec it seems as though the
+'serial number will frequently be preceeded by &H00, this
+'compensates for that
+  if left(tmpser,1)=chr(0) then tmpser=right(tmpser,len(tmpser)-1)
+   else
+     tmpser="(Not found)"
+  end if
+
+'if a location containing a model number block was found then store it
+  if intMdlFoundAt<>-1 then
+    tmp=right(location(intMdlFoundAt),14)
+    if instr(tmp,chr(&H0a))>0 then
+      tmpmdl=trim(left(tmp,instr(tmp,chr(&H0a))-1))
+    else
+      tmpmdl=trim(tmp)
+  end if
+'although it is not part of the edid spec it seems as though the
+'serial number will frequently be preceeded by &H00, this
+'compensates for that
+  if left(tmpmdl,1)=chr(0) then tmpmdl=right(tmpmdl,len(tmpmdl)-1)
+  else
+    tmpmdl="(Not found)"
+  end if
+
+'**************************************************************
+'next get the mfg date
+'**************************************************************
+'the week of manufacture is stored at EDID offset &H10
+tmpmfgweek=asc(mid(strarrRawEDID(tmpctr),&H10+1,1))
+
+'the year of manufacture is stored at EDID offset &H11
+'and is the current year -1990
+tmpmfgyear=(asc(mid(strarrRawEDID(tmpctr),&H11+1,1)))+1990
+
+'store it in month/year format 
+tmpmdt=month(dateadd("ww",tmpmfgweek,datevalue("1/1/" & tmpmfgyear))) & "/" & tmpmfgyear
+
+'**************************************************************
+'next get the edid version
+'**************************************************************
+'the version is at EDID offset &H12
+tmpEDIDMajorVer=asc(mid(strarrRawEDID(tmpctr),&H12+1,1))
+
+'the revision level is at EDID offset &H13
+tmpEDIDRev=asc(mid(strarrRawEDID(tmpctr),&H13+1,1))
+
+'store it in month/year format 
+tmpver=chr(48+tmpEDIDMajorVer) & "." & chr(48+tmpEDIDRev)
+
+'**************************************************************
+'next get the mfg id
+'**************************************************************
+'the mfg id is 2 bytes starting at EDID offset &H08
+'the id is three characters long. using 5 bits to represent
+'each character. the bits are used so that 1=A 2=B etc..
+'
+'get the data
+tmpEDIDMfg=mid(strarrRawEDID(tmpctr),&H08+1,2) 
+Char1=0 : Char2=0 : Char3=0 
+Byte1=asc(left(tmpEDIDMfg,1)) 'get the first half of the string 
+Byte2=asc(right(tmpEDIDMfg,1)) 'get the first half of the string
+'now shift the bits
+'shift the 64 bit to the 16 bit
+if (Byte1 and 64) > 0 then Char1=Char1+16 
+'shift the 32 bit to the 8 bit
+if (Byte1 and 32) > 0 then Char1=Char1+8 
+'etc....
+if (Byte1 and 16) > 0 then Char1=Char1+4 
+if (Byte1 and 8) > 0 then Char1=Char1+2 
+if (Byte1 and 4) > 0 then Char1=Char1+1 
+
+'the 2nd character uses the 2 bit and the 1 bit of the 1st byte
+if (Byte1 and 2) > 0 then Char2=Char2+16 
+if (Byte1 and 1) > 0 then Char2=Char2+8 
+'and the 128,64 and 32 bits of the 2nd byte
+if (Byte2 and 128) > 0 then Char2=Char2+4 
+if (Byte2 and 64) > 0 then Char2=Char2+2 
+if (Byte2 and 32) > 0 then Char2=Char2+1 
+
+'the bits for the 3rd character don't need shifting
+'we can use them as they are
+Char3=Char3+(Byte2 and 16) 
+Char3=Char3+(Byte2 and 8) 
+Char3=Char3+(Byte2 and 4) 
+Char3=Char3+(Byte2 and 2) 
+Char3=Char3+(Byte2 and 1) 
+tmpmfg=chr(Char1+64) & chr(Char2+64) & chr(Char3+64)
+
+'**************************************************************
+'next get the device id
+'**************************************************************
+'the device id is 2bytes starting at EDID offset &H0a
+'the bytes are in reverse order.
+'this code is not text. it is just a 2 byte code assigned
+'by the manufacturer. they should be unique to a model
+tmpEDIDDev1=hex(asc(mid(strarrRawEDID(tmpctr),&H0a+1,1)))
+tmpEDIDDev2=hex(asc(mid(strarrRawEDID(tmpctr),&H0b+1,1)))
+
+if len(tmpEDIDDev1)=1 then tmpEDIDDev1="0" & tmpEDIDDev1
+if len(tmpEDIDDev2)=1 then tmpEDIDDev2="0" & tmpEDIDDev2
+tmpdev=tmpEDIDDev2 & tmpEDIDDev1
+
+'**************************************************************
+'finally store all the values into the array
+'**************************************************************
+arrMonitorInfo(tmpctr,0)=ltrim(trim(tmpmfg))
+arrMonitorInfo(tmpctr,1)=ltrim(trim(tmpdev))
+arrMonitorInfo(tmpctr,2)=tmpmdt
+arrMonitorInfo(tmpctr,3)=ltrim(trim(tmpser))
+arrMonitorInfo(tmpctr,4)=ltrim(trim(tmpmdl))
+arrMonitorInfo(tmpctr,5)=ltrim(trim(tmpver))
+arrMonitorInfo(tmpctr,6)=ltrim(trim(tmpnative))
+arrMonitorInfo(tmpctr,7)=ltrim(trim(tmpScrSize))
+End if
+Next
+
+mon=0
+for tmpctr=0 to intMonitorCount-1
+if arrMonitorInfo(tmpctr,0) & arrMonitorInfo(tmpctr,1) & arrMonitorInfo(tmpctr,2) & arrMonitorInfo(tmpctr,3)  & arrMonitorInfo(tmpctr,4) <> "" then
+If LastSerial <> arrMonitorInfo(tmpctr,3) then 
+mon = mon + 1
+x = x  & "<BR><b>" 
+x = x  & "Monitor " & mon  & "</b>" 
+x = x  & "<br>Model Name=" & arrMonitorInfo(tmpctr,4) 
+x = x  & "<br>Serial Number=" & arrMonitorInfo(tmpctr,3) 
+x = x  & "<br>Mfr ID=" & arrMonitorInfo(tmpctr,0) 
+x = x  & "<br>Device ID=" & arrMonitorInfo(tmpctr,1) 
+x = x  & "<br>Mfr Date=" & arrMonitorInfo(tmpctr,2) 
+if arrMonitorInfo(tmpctr,5) <> "" then 
+  x = x  & "<br>EDID Version=" & arrMonitorInfo(tmpctr,5) 
+  x = x  & "<br>Native Resolution=" & arrMonitorInfo(tmpctr,6) & " (obtained from monitor EDID information)"
+  x = x & "<br>Screen size=" & arrMonitorInfo(tmpctr,7)
+end if
+LastSerial = arrMonitorInfo(tmpctr,3)
+end if
+'if mon > 1 then x = x & "<br>"
+x = x & "<br>"
+End if
+next
+
+InventoryMon = x 
+
+End Function
+
+'-------------------------
+
+Function HexStringToAscii( HS )
+'serial number is in format bababa - e.g. 2020202020202020202020205135354541423536 = 5QE5BA65
+
+On error Resume next
+
+'check for illegal chars
+if instr(HS,"&") then Exit Function
+if instr(HS,".") then Exit Function
+
+X = len(HS) 
+if x < 2 then exit function
+
+for i = 0 to x-1 step 2
+ a = mid(HS,i+1, 2) 'e.g. a = "20"
+ ai = Cint("&H00" & a) 'ensure we get 0 if conversion fails
+ if (ai > 20 and ai < 127) then
+ a = chr(ai)
+ all = all & a
+ end if
+next
+HexStringToAscii = ByteSwap(all)
+
+End Function
+
+'---
+
+Function ByteSwap( BS)
+'BS is string abcdef - convert to badcfe
+for i = 0 to len(BS)-1 step 2
+ a = mid(BS,i+2,1) & mid(BS,i+1,1)
+ b = b & a
+next
+ByteSwap = trim(ltrim(b)) 'get rid of leading and ending spaces
+End Function
+
+'---
+
+Function InventoryHDD( strComputer )
+'Get HDD info including serial number
+On Error Resume Next
+'Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_DiskDrive WHERE SCSITargetId >= 0", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_DiskDrive", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem In colItems
+ x = x & "<br>Hard Disk " &  objItem.Index
+ x = x & " " & objItem.Model
+ x = x & " " & DoSize(objItem.Size)
+ f = ""
+ s = ""
+ fs = ""
+ f = objitem.FirmwareRevision & ""
+ s =  HexStringToAscii(objitem.SerialNumber  & "")
+ if len(s) < 5 then s = objitem.SerialNumber  & ""
+ if f & s = "" then call ParseDiskPnP(objitem.PnPDeviceID,f,s)
+ if f <> "" then f = "Firmware=" & f
+ if s <> "" then s = "Sno=" & s
+ if f & s <> "" then fs = " [" & trim(rtrim(s & " " & f)) & "]"
+ x = x & "   (" & objItem.InterfaceType & ")" & fs
+ p = objitem.Partitions
+ if p <> "" then x = x & " (" & p & " Partition"
+ if p > 1 then x = x & "s)" else x = x & ")"
+ cntHDD = cntHDD + 1
+Next
+InventoryHDD = "<br><b>Physical Hard Disk Drives</b>" & x & "<br>"
+InventoryHdd = InventoryHdd & DiskLogical(strComputer) & "<br>"
+
+End Function
+
+'--
+
+Function DiskLogical(strComputer)
+On Error Resume Next
+
+Set colItems = objSWbemServices.ExecQuery ("Select * from Win32_LogicalDisk WHERE DriveType=3 OR DriveType=2")
+
+For Each objItem in colItems
+ z = objItem.VolumeName & ""  'add empty string in case returns nul
+ if z = "" then z = objItem.Description
+ x = "<br><b>" & objItem.Name & " " & z  
+ x = x & " " & DoSize(objItem.Size) & "</b>" 
+    x = x & " Free Space=" & DoSize(objItem.FreeSpace) 
+ if objItem.Compressed = True then x = x & " Compressed" 
+ y = y & x
+Next
+
+DiskLogical = "<br><b>Logical Hard Disk Volumes</b>" & y 
+ 
+End Function
+
+'---
+
+Sub ParseDiskPnP(IDString,fw,sn)
+'IDE\DISKMAXTOR_6E040L0__________________________NAR61590\3145424337584559202020202020202020202020
+'USBSTOR\DISK&VEN_SANDISK&PROD_U3_TITANIUM&REV_2.16\0000060410011041&0
+a = instrRev(IDString,"_")
+x = mid(IDString,a+1)
+b = instrRev(x,"\")
+y = mid(x,b+1)
+fw = mid(x,1,b-1)
+sn = HexStringToAscii(y)
+End Sub
+
+'---
+
+Function DoSize(S)
+if S < 1000 then DoSize = FormatNumber( S,1 ) & "B"
+if S < 1000000 then DoSize = FormatNumber( S / 1000 ,1) & "KB" 
+if S < 1000000000 then DoSize = FormatNumber( S / 1000000,1 ) & "MB" 
+if S > 999999999 then  DoSize = FormatNumber( S / 1000000000,1 ) & "GB"
+If DoSize="" then DoSize = "(unknown)"
+End Function
+
+' ----
+
+Function FormatiSpc(intSpace) 
+  intSpace = intSpace/1024
+  intSpace = intSpace/1024
+  intSpace = intSpace/1024
+  intSpace= FormatNumber(intSpace,1)
+  FormatiSpc = intSpace
+End function
+
+'______________
+
+Function InventoryCPU( strComputer )
+On Error Resume Next
+
+Set colItems = objSWbemServices.ExecQuery( "SELECT * FROM Win32_Processor", "WQL", wbemFlagReturnImmediately + wbemFlagForwardOnly )
+For Each objItem In colItems
+ CPUNumber = CPUNumber + 1
+ CPUModel  = Strip(objItem.Name)
+ CPUSpeed  = objItem.CurrentClockSpeed
+ CPUSocket = objItem.SocketDesignation
+ CPUCaption = objItem.Caption
+ CPUMax = objItem.MaxClockSpeed
+'WMI MAxClock Speed is not always correct so read registry to see if larger value 
+ strBaseKey =  "HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+ strValue=""
+ Set objSWbemServicesX = objSWbemLocator.ConnectServer(strComputer, "root\default", strUser, strPassword, "MS_409", "ntlmdomain:" + strDomain)
+ Set objReg = objSWbemServicesX.Get ("StdRegProv")
+ objReg.GetDWORDValue HKLM, strBaseKey, "~MHz", strValue
+ if strValue <> "" AND NOT (IsNull(strValue)) then CPUMAx=strValue
+ Set objSWbemServicesX = nothing
+ InventoryCPU = InventoryCPU & "<br><b>CPU Core " & CPUNumber  & "</b><br>CPU value=" & CPUModel  & "<br>Current speed=" & CPUSpeed & "MHz<br>Max Clock speed=" & CPUMax & "MHz<br>CPU Socket=" &  CPUSocket & "<br>Type=" &  CPUCaption
+Next
+ InventoryCPU =  "<br>" & InventoryCPU & "<br>"
+End Function
+
+' _______________
+
+Function Chassis( strComputer )
+On Error Resume Next
+
+Set colChassis    = objSWbemServices.ExecQuery( "Select * from Win32_SystemEnclosure","WQL" , 16 )
+For Each objChassis in colChassis
+ For Each objItem in objChassis.ChassisTypes
+ Select Case objItem
+ Case  1 strChassis = "Maybe Virtual Machine"
+ Case  2 strChassis = "Unknown"
+ Case  3 strChassis = "Desktop"
+ Case  4 strChassis = "Thin Desktop"
+ Case  5 strChassis = "Pizza Box"
+ Case  6 strChassis = "Mini Tower"
+ Case  7 strChassis = "Full Tower"
+ Case  8 strChassis = "Portable"
+ Case  9 strChassis = "Laptop"
+ Case 10 strChassis = "Notebook"
+ Case 11 strChassis = "Hand Held"
+ Case 12 strChassis = "Docking Station"
+ Case 13 strChassis = "All in One"
+ Case 14 strChassis = "Sub Notebook"
+ Case 15 strChassis = "Space-Saving"
+ Case 16 strChassis = "Lunch Box"
+ Case 17 strChassis = "Main System Chassis"
+ Case 18 strChassis = "Lunch Box"
+ Case 19 strChassis = "SubChassis"
+ Case 20 strChassis = "Bus Expansion Chassis"
+ Case 21 strChassis = "Peripheral Chassis"
+ Case 22 strChassis = "Storage Chassis" 
+ Case 23 strChassis = "Rack Mount Unit"
+ Case 24 strChassis = "Sealed-Case PC" 
+ End Select
+ Next
+Next
+Chassis = strChassis
+
+End Function
+
+
+'-----------------------------------------------
+
+Function UnTag( strString )
+ ' This function replaces special characters by their "ampersand code".
+ ' The lines strPre = "" etc. are there to make sure that strPre has
+ ' a value even if the next line fails.
+
+ On Error Resume Next
+
+ If InStr( strString, "&" ) > 0 Then
+ posAmp = -1
+ Do Until posAmp = 0
+ posAmp    = InStr( posAmp + 2, strString, "&" )
+ strPre    = ""
+ strPre    = Mid( strString, 1, posAmp - 1 )
+ strPost   = ""
+ strPost   = Mid( strString, posAmp + 1 )
+ If posAmp > 0 Then strString = strPre & "&amp;" & strPost
+ Loop
+ End If
+
+ If InStr( strString, "<" ) > 0 Then
+ posLt = -1
+ Do Until posLt = 0
+ posLt     = InStr( posLt + 2, strString, "<" )
+ strPre    = ""
+ strPre    = Mid( strString, 1, posLt - 1 )
+ strPost   = ""
+ strPost   = Mid( strString, posLt + 1 )
+ If posLt > 0 Then strString = strPre & "&lt;" & strPost
+ Loop
+ End If
+
+ If InStr( strString, ">" ) > 0 Then
+ posGt = -1
+ Do Until posGt = 0
+ posGt     = InStr( posGt + 2, strString, ">" )
+ strPre    = ""
+ strPre    = Mid( strString, 1, posGt - 1 )
+ strPost   = ""
+ strPost   = Mid( strString, posGt + 1 )
+ If posGt > 0 Then strString = strPre & "&gt;" & strPost
+ Loop
+ End If
+ UnTag = strString
+End Function
+
+Function WMIDateStringToDate(dtmDate) 
+ WMIDateStringToDate = CDate(Mid(dtmDate, 5, 2) & "/" & _
+ Mid(dtmDate, 7, 2) & "/" & Left(dtmDate, 4) _
+ & " " & Mid (dtmDate, 9, 2) & ":" & Mid(dtmDate, 11, 2) & ":" & Mid(dtmDate,13, 2))
+End Function
+
+
+' --------------
+' GETBOARDINFO
+'---------------
+
+Function GetBoardInfo (strComputer)
+Dim colGUID
+Dim objComputer
+Dim colSMBIOS
+Dim objWMIService
+'get Mainboard DMI/SMBIOS information - these parameters are all stored in the mainboard BIOS DMI data tables
+
+On Error Resume Next
+x=""  
+Set colSMBIOS = objSWbemServices.ExecQuery ("SELECT * FROM Win32_BaseBoard","WQL", 48)
+For Each objSMBIOS in colSMBIOS
+ BS= trim(objSMBIOS.SerialNumber)
+ MP = trim(objSMBIOS.Product)
+ MV = trim(objSMBIOS.Version)
+ MMod=trim(objSMBIOS.Model)
+ MManuf=trim(objSMBIOS.Manufacturer)
+Next
+x = x & "<br><b>Mainboard</b>"
+if MP   <> ""   then x =x & "<br>Product=" & MP 
+if MV   <> ""   then x =x & "<br>Version=" & MV
+if BS   <> ""   then x =x & "<br>Serial Number=" & BS
+if MMod <> ""   then x =x & "<br>Model=" & MMod
+if MManuf <> "" then x =x & "<br>Manufacturer=" & MManuf
+
+Set colSMBIOS = objSWbemServices.ExecQuery ("SELECT * FROM Win32_BIOS","WQL",48)
+For Each objSMBIOS in colSMBIOS
+ BN = trim(objSMBIOS.Name)
+ BV = trim(objSMBIOS.Version)
+ BD = trim(objSMBIOS.Description) 
+ BS = trim(objSMBIOS.SerialNumber)
+ SBV=trim(objSMBIOS.SMBIOSBIOSVersion)
+ BMan=trim(objSMBIOS.Manufacturer)
+ BID=trim(objSMBIOS.IdentificationCode)
+ BDate=WMIDateStringToDate(objSMBIOS.ReleaseDate)
+ BinstDate=WMIDateStringToDate(objSMBIOS.InstallDate)
+Next
+x = x &  "<br><br><b>BIOS</b>"
+'if BN <> "" then x = x & "<br>Name=" & BN  'BN same as BD
+if BV <> "" then x = x & "<br>Version=" & BV 
+if BD <> "" then x = x & "<br>Description=" & BD 
+'if BS <> "" then x = x & "<br>Serial Number=" & BS 'same as System Serial number
+if SBV <> "" then x = x & "<br>SMBIOS Version=" & SBV 
+if BMan <> "" then x = x & "<br>Manufacturer=" & BMan
+if BID <> "" then x = x & "<br>ID=" & BID 
+if BDate <> "" then x = x & "<br>Release Date=" & BDate
+if BinstDate <> "" then x = x & "<br>Install Date=" & BinstDate
+
+Set colSMBIOS = objSWbemServices.ExecQuery  ("SELECT * FROM Win32_SystemEnclosure","WQL",48)
+For Each objSMBIOS in colSMBIOS
+ CS=trim(objSMBIOS.SerialNumber) 
+ CA=trim(objSMBIOS.SMBIOSAssetTag)
+ CV=trim(objSMBIOS.Version)
+ CM=trim(objSMBIOS.Manufacturer)
+ CP=trim(objSMBIOS.PartNumber)
+ CMod=trim(objSMBIOS.Model)
+ CN=trim(objSMBIOS.Name)
+Next
+
+Chas = Chassis(strComputer)
+Chas = ltrim(Chas)
+x = x & "<br><br><b>Chassis</b>"
+if CS <> ""   then x = x & "<br>Serial Number=" & CS
+if CA <> ""   then x = x & "<br>Asset Tag=" & CA
+if Chas <> "" then x = x & "<br>Type=" & Chas
+if CV <> ""   then x = x & "<br>Version=" & CV
+if CM <> ""   then x = x & "<br>Manufacturer=" & CM
+if CP <> ""   then x = x & "<br>Part Number=" & CP
+if CMod <> "" then x = x & "<br>Model=" & CMod
+'if CN <> ""   then x = x & "<br>Name=" & CN     ' System Enclosure
+
+Set colGUID = objSWbemServices.ExecQuery("Select * from Win32_ComputerSystemProduct","WQL",48)
+For Each objComputer in colGUID 
+ SS = trim(objComputer.IdentifyingNumber)
+ SP = trim(objComputer.Name)  
+ GUID = trim(objComputer.UUID)
+ SM = trim(objComputer.Vendor)
+ SV = trim(objComputer.Version) 
+ SCap=trim(objComputer.Caption)
+ Sdesc=trim(objComputer.Description)
+ SSKU=trim(objComputer.SKUNumber)
+Next
+IF GUID <> "" then
+ p1=mid(GUID,1,2)
+ p2=mid(GUID,3,2)
+ p3=mid(GUID,5,2)
+ p4=mid(GUID,7,2)
+ p5=mid(GUID,10,2)
+ p6=mid(GUID,12,2)
+ p7=mid(GUID,15,2)
+ p8=mid(GUID,17,2)
+ p9=mid(GUID,20,4)
+ p10=mid(GUID,25)
+ GUID= GUID & "<br>GUID (Wire format for PXE)=" & p4 & p3 & p2 & p1 & p6 & p5 & p8 & p7 & p9 & p10
+End if
+
+x = x &  "<br><br><B>System</b>"
+if SS<>"" then x = x & "<br>Serial Number=" & SS 
+if SP<>"" then x = x & "<br>Product=" & SP 
+if SM<>"" then x = x &  "<br>Manufacturer=" & SM 
+if SV<>"" then x = x & "<br>Version=" & SV 
+'if SCap<>"" then x = x & "<br>Caption=" & SCap    'Computer System Product
+'if Sdesc<>"" then x = x & "<br>Description=" & Sdesc 'Computer System Product
+if SSKU<>"" then x = x & "<br>SKU Number=" & SSKU
+if GUID<>"" then x = x & "<br>GUID (Windows format)=" & GUID
+set colGUID = Nothing
+set objWMIService = Nothing
+GetBoardInfo = x
+
+End Function
+
+'-----------------------------------------------
+' GETINFO - MAIN ROUTINE TO COLLECT ALL INFO
+'-----------------------------------------------
+Function GetInfo()
+Dim colGUID
+Dim objComputer
+Dim colSMBIOS
+Dim objWMIService
+
+On ERROR RESUME NEXT
+
+'Establish a connection to the computer which can be on a network
+Set objSWbemLocator = CreateObject("WbemScripting.SWbemLocator")
+Set objSWbemServices = objSWbemLocator.ConnectServer(strComputer, _
+    "root\cimv2", _
+     strUser, _
+     strPassword, _
+     "MS_409", _
+     "ntlmdomain:" + strDomain)
+
+'Get all info into x
+x = x &  GetOSVer() 
+x = x & GetBoardInfo(strComputer)
+x = x & InventoryCPU(strComputer)
+if 1=1 then
+x = x & InventoryHDD(strComputer)
+x = x & InventoryCDR(strComputer)
+x = x & InventoryTapeDrive(strComputer)
+x = x & InventoryMEM(strComputer)
+x = x & InventoryNIC(strComputer) 
+x = x & InventorySound(strComputer)
+x = x & InventoryVideo(strComputer)
+x = x & InventoryMon(strComputer)
+x = x & GetProblemDev(strComputer)
+x = x & ListHSP(strComputer)
+End If
+
+
+If ExtraList = true then 
+if 1=1 then
+ x = x & ListServerSW(strComputer)
+ x = x & GetPrinters(strComputer)
+ x = x & GetDrivers(strComputer)
+ x = x & ListPCI(strComputer)
+ x = x & ListSW(strComputer)
+ x = x & GetStartup(strComputer)
+ x = x & EventErrors(strComputer)
+End If
+End If
+
+CompName=GetComputerName()
+
+'form header text in hdr
+hdr="<h1>System Information for <b>"
+hdr=hdr & CompName & "</b></h1></a><p>"
+hdr=hdr & "<b>Date: " & Now & "</b><br>"
+
+'return text for page as a string
+GetInfo = hdr & x & "<br>"
+
+'set MyGetInfo if local computer or YourGetInfo if remote computer
+if strComputer = "." then MyGetInfo = GetInfo else YourGetInfo=GetInfo
+if strComputer = "." then MyComputerName=CompName else YourComputerName=CompName
+if strComputer = "." then MYSN=MyWO else YourSN=MyWO
+
+End function
+
+
+'-----------------------------------------------
+' GETWO
+'-----------------------------------------------
+
+Function GetWO()
+Dim colGUID
+Dim objComputer
+Dim colSMBIOS
+Dim objWMIService
+On ERROR RESUME NEXT
+
+'Routine to get the system serial number from the DMI values
+'It assumes that the serial number is in the format TOnnnnnnnn or WOnnnnnnnn
+
+if strComputer="" then strComputer="."
+Set objSWbemLocator = CreateObject("WbemScripting.SWbemLocator")
+Set objSWbemServices = objSWbemLocator.ConnectServer(strComputer, _
+    "root\cimv2", _
+     strUser, _
+     strPassword, _
+     "MS_409", _
+     "ntlmdomain:" + strDomain)
+
+if Err then 
+ GetWo=Err 
+Else
+
+Set colSMBIOS = objSWbemServices.ExecQuery  ("SELECT * FROM Win32_SystemEnclosure","WQL",48)
+For Each objSMBIOS in colSMBIOS
+ CS=  trim(objSMBIOS.SerialNumber)
+ CA=  trim(objSMBIOS.SMBIOSAssetTag)
+Next
+Set colGUID = objSWbemServices.ExecQuery("Select * from Win32_ComputerSystemProduct","WQL",48)
+For Each objComputer in colGUID 
+ SS = trim(objComputer.IdentifyingNumber)
+Next
+set colGUID = Nothing
+set objWMIService = Nothing
+
+Set colSMBIOS = objSWbemServices.ExecQuery ("SELECT * FROM Win32_BaseBoard","WQL", 48)
+For Each objSMBIOS in colSMBIOS
+ BS= trim(objSMBIOS.SerialNumber)
+ MP = trim(objSMBIOS.Product)
+ MV = trim(objSMBIOS.Version)
+ MMod=trim(objSMBIOS.Model)
+ MManuf=trim(objSMBIOS.Manufacturer)
+Next
+set colSMBIOS = Nothing
+set objSMBIOS = Nothing
+
+if GetWO = "" then  GetWO=SS
+if GetWO = "" then  GetWO=BS
+if GetWO = "" then  GetWO=CS
+if GetWO = "" then  GetWO=CA
+
+
+SearchString = "http://www.google.com"
+MyWO = trim(GetWO)
+if len(GetWO) <> 0 then  SearchString = "<a style=" & chr(34) & "color: red; text-decoration: underline;" & chr(34) & " href="  & chr(34) & SearchString & chr(34) & ">" & GetWO & "</a>"
+GetWo="OK"
+
+End if
+
+End function
+
+'-----
+
+Function Clear()
+Checkbox1.checked=False
+ExtraList = Checkbox1.checked
+End Function
+
+'---
+
+Sub CheckBoxList ()
+'respond to checkbox click
+ ExtraList = Checkbox1.checked
+ If ExtraList = True then
+ y = msgbox ("Include list of installed Software, Drivers, Event Log errors, etc. - this may take several minutes",1)
+ if y = vbOK then
+ MyArea.InnerHtml = "<br><b><font color=red>Query in progress - please wait...</font></b>"
+ strComputer = "."
+ x = GetInfo()
+ MyArea.InnerHtml=x
+ Else
+ ExtraList = False
+ Checkbox1.checked = false
+ end if
+ end if
+ 
+End Sub
+
+'---
+
+Sub CheckBoxList2 ()
+'respond to checkbox click
+    ExtraList = Checkbox2.checked
+End Sub
+
+-->
+
+</SCRIPT>
+
+
+</head>
+
+<HTA:Application
+Caption = Yes
+Border = Thick
+ShowInTaskBar = Yes
+MaximizeButton = Yes
+MinimizeButton = Yes
+icon="SysInfo.ico"
+SINGLEINSTANCE = "yes"
+APPLICATIONNAME= "SysInfo"
+>
+
+<body onLoad="clear()"; STYLE="font:12 pt arial; color:white; background-color: blue; filter:progid:DXImageTransform.Microsoft.Gradient (GradientType=1, StartColorStr='#002266', EndColorStr='#0033FF')">
+
+<input Type = "Button" Value = "Save this Computer Information to a File" onclick="LogFile(MyGetInfo)">
+&nbsp;&nbsp;&nbsp;
+<input Type=Button Value="Email this Computer Information" onclick="SendEmail MyGetInfo, MySN, MyComputerName" >
+<P>
+<P>
+<input type = "checkbox" name="Checkbox1" value="False" onClick="CheckBoxList"> Also list Printers, Software, Hotfixes, PCI IDs, Event Log Errors and Drivers (may take several minutes)
+ 
+
+<div Id = "MyArea"></div>
+<script type="text/vbscript">
+GetWO()
+MyArea.InnerHtml = GetInfo()
+Checkbox1.checked = True
+call CheckBoxList()
+</script> 
+
+<p><hr>
+<h2>Collect System Information from Remote Computer</h2>
+Note: You will need Administrator rights to access another computer (with a password set).
+<br>Firewall on target computer may block access unless Windows Management Instrumentation (WMI) for Vista or Remote Administration for XP is allowed as an exception.
+<br>Printer And File Sharing may need to be enabled on target computer.
+<p>
+<input type = "checkbox" name="Checkbox2" value="False" onClick="CheckBoxList2"> Also list Printers, Software, Hotfixes, PCI IDs, Event Log Errors and Drivers (may take several minutes)
+ 
+<table border="0" cellpadding="0" cellspacing="10">
+<td>User Name     <input type="text"     name="AUserName" size="15" title="a User Account Name - e.g. Administrator"></td>
+<td>User Password <input type="password" name="APassword" size="15" title="Password for the User account"></td>
+<td>Domain        <input type="text"     name="ADomain"   size="15" title="Domain name or WORKGROUP"></td>
+<td>Computer Name <input type="text"     name="AComputer" size="15" title="Computer Name (use List Computers to see a list of these)"></td>
+</table>
+<br>
+<input Type = "Button" Value = "View Remote Computer Details" onclick="SetName">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;
+<input Type = "Button" Value = "Save Remote Information to File" onclick="LogFile(YourGetInfo)">
+&nbsp;&nbsp;&nbsp;
+<input Type = "Button" Value = "Email Remote Information" onclick="SendEmail YourGetInfo,YourSN,YourComputerName" >
+<P>
+<P>
+<p>
+<div Id = "DataArea"></div>
+<hr><p>
+
+<p></p>
+<input Type = "Button" Value = "List Computers in a Domain" onclick="ListAccounts()"><P>
+<p><div Id = "AccountArea"></div>
+<hr>
+
+</body>
