@@ -1,4 +1,5 @@
 # Made By  1UPTEKBEN - 12/08/2024
+# Keeps System awake, prevents sleep, display timeout etc - handy when doing system installs
 
 function Format-TimeSpan {
     param (
